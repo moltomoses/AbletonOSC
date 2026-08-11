@@ -108,6 +108,32 @@ class TrackHandler(AbletonOSCHandler):
 
         self.osc_server.add_handler("/live/track/delete_clip", create_track_callback(track_delete_clip))
 
+        def track_get_drum_pads(track, _):
+            """ Flattened (note, name) pairs for every loaded pad of the first
+            drum rack on the track, searching inside instrument racks. """
+            def find_drum_rack(devices, depth=0):
+                if depth > 3:
+                    return None
+                for device in devices:
+                    if device.can_have_drum_pads:
+                        return device
+                    if device.can_have_chains:
+                        for chain in device.chains:
+                            rack = find_drum_rack(chain.devices, depth + 1)
+                            if rack is not None:
+                                return rack
+                return None
+
+            rack = find_drum_rack(track.devices)
+            rv = []
+            if rack is not None:
+                for pad in rack.drum_pads:
+                    if len(pad.chains) > 0:
+                        rv += [pad.note, pad.name]
+            return tuple(rv)
+
+        self.osc_server.add_handler("/live/track/get/drum_pads", create_track_callback(track_get_drum_pads))
+
         def track_get_clip_names(track, _):
             return tuple(clip_slot.clip.name if clip_slot.clip else None for clip_slot in track.clip_slots)
 

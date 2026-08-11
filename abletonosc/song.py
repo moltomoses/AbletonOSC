@@ -19,7 +19,6 @@ class SongHandler(AbletonOSCHandler):
         #--------------------------------------------------------------------------------
         for method in [
             "capture_and_insert_scene",
-            "capture_midi",
             "continue_playing",
             "create_audio_track",
             "create_midi_track",
@@ -48,12 +47,53 @@ class SongHandler(AbletonOSCHandler):
             self.osc_server.add_handler("/live/song/%s" % method, callback)
 
         #--------------------------------------------------------------------------------
+        # Capture MIDI raises RuntimeError when can_capture_midi is False
+        # (nothing recently played) — Ableton's own scripts wrap it the same
+        # way. A bare raise would abort this tick's OSC dispatch loop.
+        # (Vendored addition for LiveRemote; can_capture_midi is also exposed
+        # as a property below so the app can dim its button.)
+        #--------------------------------------------------------------------------------
+        def song_capture_midi(song, _):
+            try:
+                song.capture_midi()
+            except RuntimeError:
+                self.logger.info("capture_midi: nothing to capture")
+        self.osc_server.add_handler("/live/song/capture_midi", partial(song_capture_midi, self.song))
+
+        #--------------------------------------------------------------------------------
+        # Save the Live set. Song.save() only exists in newer Live versions,
+        # so reply 1 on success / 0 when unsupported so clients can tell.
+        # (Vendored addition for LiveRemote.)
+        #--------------------------------------------------------------------------------
+        def song_save(_):
+            if hasattr(self.song, "save"):
+                self.song.save()
+                return (1,)
+            # No save in this Live version's API — click File > Save Live
+            # Set via macOS accessibility instead. Targeted menu click works
+            # with Live in the background (a raw Cmd+S would not), and
+            # Popen keeps Live's thread from blocking on the script.
+            try:
+                import subprocess
+                subprocess.Popen([
+                    "/usr/bin/osascript", "-e",
+                    'tell application "System Events" to tell process "Live" '
+                    'to click menu item "Save Live Set" of menu "File" of menu bar 1',
+                ])
+                return (1,)
+            except Exception as e:
+                self.logger.warning("Remote save fallback failed: %s" % e)
+                return (0,)
+        self.osc_server.add_handler("/live/song/save", song_save)
+
+        #--------------------------------------------------------------------------------
         # Callbacks for Song: properties (read/write)
         #--------------------------------------------------------------------------------
         properties_rw = [
             "arrangement_overdub",
             "back_to_arranger",
             "clip_trigger_quantization",
+            "count_in_duration",
             "current_song_time",
             "groove_amount",
             "is_ableton_link_enabled",
@@ -79,6 +119,7 @@ class SongHandler(AbletonOSCHandler):
         # Callbacks for Song: properties (read-only)
         #--------------------------------------------------------------------------------
         properties_r = [
+            "can_capture_midi",
             "can_redo",
             "can_undo",
             "is_playing",
@@ -97,6 +138,11 @@ class SongHandler(AbletonOSCHandler):
         # Callbacks for Song: Track properties
         #--------------------------------------------------------------------------------
         self.osc_server.add_handler("/live/song/get/num_tracks", lambda _: (len(self.song.tracks),))
+
+        # Return-track names, in send order: index 0 is Send A's target, and
+        # len() is how many sends every track's mixer_device carries.
+        self.osc_server.add_handler("/live/song/get/return_track_names",
+                                    lambda _: tuple(track.name for track in self.song.return_tracks))
 
         def song_get_track_names(params):
             if len(params) == 0:

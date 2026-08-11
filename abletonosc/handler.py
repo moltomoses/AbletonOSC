@@ -59,15 +59,21 @@ class AbletonOSCHandler(Component):
             getter:
         """
         def property_changed_callback():
-            if getter is None:
-                value = getattr(target, prop)
-            else:
-                value = getter(params)
-            if type(value) is not tuple:
-                value = (value,)
-            self.logger.info("Property %s changed of %s %s: %s" % (prop, self.class_identifier, str(params), value))
-            osc_address = "/live/%s/get/%s" % (self.class_identifier, prop)
-            self.osc_server.send(osc_address, (*params, *value,))
+            # Never let an exception escape into Live's listener dispatch —
+            # it corrupts the control surface until Live restarts.
+            # (Vendored fix for LiveRemote.)
+            try:
+                if getter is None:
+                    value = getattr(target, prop)
+                else:
+                    value = getter(params)
+                if type(value) is not tuple:
+                    value = (value,)
+                self.logger.info("Property %s changed of %s %s: %s" % (prop, self.class_identifier, str(params), value))
+                osc_address = "/live/%s/get/%s" % (self.class_identifier, prop)
+                self.osc_server.send(osc_address, (*params, *value,))
+            except Exception as e:
+                self.logger.warning("Listener for %s %s failed (ignored): %s" % (self.class_identifier, prop, e))
 
         listener_key = (prop, tuple(params))
         if listener_key in self.listener_functions:
@@ -109,8 +115,17 @@ class AbletonOSCHandler(Component):
     def _clear_listeners(self):
         """
         Clears all listener functions, to prevent listeners continuing to report after a reload.
+        A failure for one listener (e.g. a mixer listener with no tracked target object)
+        must not abort the clear: reload_imports() calls this between clearing the handler
+        table and re-registering it, so an uncaught exception leaves the OSC server with
+        no handlers at all.
         """
         for listener_key in list(self.listener_functions.keys())[:]:
-            target = self.listener_objects[listener_key]
-            prop, params = listener_key
-            self._stop_listen(target, prop, params)
+            try:
+                target = self.listener_objects[listener_key]
+                prop, params = listener_key
+                self._stop_listen(target, prop, params)
+            except Exception as e:
+                self.logger.warning("Failed to clear listener %s (continuing): %s" % (str(listener_key), e))
+                self.listener_functions.pop(listener_key, None)
+                self.listener_objects.pop(listener_key, None)

@@ -53,6 +53,10 @@ class ClipHandler(AbletonOSCHandler):
                 track_index, clip_index = int(params[0]), int(params[1])
                 track = self.song.tracks[track_index]
                 clip = track.clip_slots[clip_index].clip
+                if clip is None:
+                    # Empty slot: clients probe these (is_recording sweeps on
+                    # armed tracks) — answer with silence, not a traceback.
+                    return None
                 if pass_clip_index:
                     rv = func(clip, *args, tuple(params[0:]))
                 else:
@@ -66,9 +70,21 @@ class ClipHandler(AbletonOSCHandler):
         methods = [
             "fire",
             "stop",
-            "duplicate_loop", 
+            "duplicate_loop",
             "remove_notes_by_id"
         ]
+
+        def clip_quantize(clip, params: Tuple[Any] = ()):
+            # Live exports Clip.quantize as (int grid, float amount) and
+            # Boost.Python won't coerce a float grid (TouchOSC-style clients
+            # send every numeric as float) — cast explicitly. Unwarped audio
+            # clips can't be quantized; skip instead of raising.
+            if clip.is_audio_clip and not clip.warping:
+                self.logger.warning("Quantize skipped: unwarped audio clip")
+                return
+            clip.quantize(int(params[0]), float(params[1]))
+
+        self.osc_server.add_handler("/live/clip/quantize", create_clip_callback(clip_quantize))
         properties_r = [
             "end_time",
             "file_path",

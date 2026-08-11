@@ -18,7 +18,10 @@ class ClipSlotHandler(AbletonOSCHandler):
                 else:
                     rv = func(clip_slot, *args, tuple(params[2:]))
 
-                self.logger.info(track_index, clip_index, rv)
+                # Passing ints as the log format string made Python's logging
+                # print a formatting traceback into Live's Log.txt on every
+                # clip_slot request — format explicitly.
+                self.logger.info("clip_slot (%s, %s) -> %s" % (track_index, clip_index, rv))
                 if rv is not None:
                     return (track_index, clip_index, *rv)
 
@@ -65,3 +68,12 @@ class ClipSlotHandler(AbletonOSCHandler):
             clip_slot.duplicate_clip_to(target_clip_slot)
 
         self.osc_server.add_handler("/live/clip_slot/duplicate_clip_to", create_clip_slot_callback(duplicate_clip_slot))
+
+        def fire_clip_slot_with_length(clip_slot, args):
+            # Live 11+ fixed-length recording: fire the (empty, armed) slot
+            # and Live stops recording after record_length beats and loops
+            # the clip — the Push/Launchpad "Fixed Length" behaviour.
+            record_length, = tuple(args)
+            clip_slot.fire(record_length=float(record_length))
+
+        self.osc_server.add_handler("/live/clip_slot/fire_length", create_clip_slot_callback(fire_clip_slot_with_length))

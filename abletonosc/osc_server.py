@@ -5,10 +5,16 @@ from ..pythonosc.osc_bundle import OscBundle
 from ..pythonosc.osc_message_builder import OscMessageBuilder, BuildError
 
 import re
+import time
 import errno
 import socket
 import logging
 import traceback
+
+# Seconds of silence before a client stops receiving listener broadcasts.
+# LiveRemote heartbeats every 3s, so 4 missed beats = gone (backgrounded
+# apps stop heartbeating and expire promptly). (Vendored for LiveRemote.)
+CLIENT_TIMEOUT = 12.0
 
 class OSCServer:
     def __init__(self,
@@ -37,6 +43,12 @@ class OSCServer:
         self._socket.setblocking(0)
         self._socket.bind(self._local_addr)
         self._callbacks = {}
+        # Every client IP that has talked to us recently, ip -> last-seen
+        # time. Listener pushes broadcast to ALL of these, so an iPad and an
+        # iPhone can run simultaneously — upstream only pushed to the most
+        # recent sender, which made two devices fight over updates.
+        # (Vendored multi-client support for LiveRemote.)
+        self._clients = {}
 
         self.logger = logging.getLogger("abletonosc")
         self.logger.info("Starting OSC server (local %s, response port %d)",
@@ -79,7 +91,26 @@ class OSCServer:
         try:
             msg = msg_builder.build()
             if remote_addr is None:
-                remote_addr = self._remote_addr
+                # No explicit target = a listener push / broadcast message:
+                # send to every active client, pruning the expired.
+                now = time.time()
+                expired = [ip for ip, seen in self._clients.items()
+                           if now - seen > CLIENT_TIMEOUT]
+                for ip in expired:
+                    del self._clients[ip]
+                    self.logger.info("AbletonOSC: client expired: %s", ip)
+                if self._clients:
+                    for ip in self._clients:
+                        # One unreachable client must not starve the rest
+                        try:
+                            self._socket.sendto(msg.dgram, (ip, self._response_port))
+                        except OSError:
+                            pass
+                else:
+                    # Nobody registered yet (e.g. /live/startup at init):
+                    # legacy single-address behaviour.
+                    self._socket.sendto(msg.dgram, self._remote_addr)
+                return
             self._socket.sendto(msg.dgram, remote_addr)
         except BuildError:
             self.logger.error("AbletonOSC: OSC build error: %s" % (traceback.format_exc()))
@@ -157,12 +188,17 @@ class OSCServer:
                 #--------------------------------------------------------------------------------
                 data, remote_addr = self._socket.recvfrom(65536)
                 #--------------------------------------------------------------------------------
-                # Update the default reply address to the most recent client. Used when
-                # sending (e.g) /live/song/beat messages and listen updates.
-                #
-                # This is slightly ugly and prevents registering listeners from different IPs.
+                # Register/refresh the sender as a listener-broadcast client.
+                # Upstream instead overwrote a single reply address here ("slightly
+                # ugly and prevents registering listeners from different IPs") —
+                # the multi-client registry in send() replaces that.
+                # (Vendored for LiveRemote.)
                 #--------------------------------------------------------------------------------
-                self._remote_addr = (remote_addr[0], OSC_RESPONSE_PORT)
+                ip = remote_addr[0]
+                if ip not in self._clients:
+                    self.logger.info("AbletonOSC: client registered: %s", ip)
+                self._clients[ip] = time.time()
+                self._remote_addr = (ip, OSC_RESPONSE_PORT)
                 self.parse_bundle(data, remote_addr)
 
         except socket.error as e:

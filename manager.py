@@ -90,17 +90,29 @@ class Manager(ControlSurface):
         self.osc_server.add_handler("/live/api/show_message", show_message_callback)
 
         with self.component_guard():
-            self.handlers = [
-                abletonosc.SongHandler(self),
-                abletonosc.ApplicationHandler(self),
-                abletonosc.ClipHandler(self),
-                abletonosc.ClipSlotHandler(self),
-                abletonosc.TrackHandler(self),
-                abletonosc.DeviceHandler(self),
-                abletonosc.ViewHandler(self),
-                abletonosc.SceneHandler(self),
-                abletonosc.MidiMapHandler(self),
-            ]
+            # Construct each handler independently (vendored fix for
+            # LiveRemote): Live re-creates the control surface every time
+            # the MIDI port list changes, and one handler failing mid-init
+            # used to abort the rest — leaving a partial API ("Unknown OSC
+            # address") until Live restarted.
+            self.handlers = []
+            for handler_class in [
+                abletonosc.SongHandler,
+                abletonosc.ApplicationHandler,
+                abletonosc.ClipHandler,
+                abletonosc.ClipSlotHandler,
+                abletonosc.TrackHandler,
+                abletonosc.DeviceHandler,
+                abletonosc.ViewHandler,
+                abletonosc.SceneHandler,
+                abletonosc.MidiMapHandler,
+                abletonosc.BrowserHandler,
+            ]:
+                try:
+                    self.handlers.append(handler_class(self))
+                except Exception:
+                    logger.warning("Handler %s failed to init:\n%s"
+                                   % (handler_class.__name__, traceback.format_exc()))
 
     def clear_api(self):
         self.osc_server.clear_handlers()
@@ -121,6 +133,8 @@ class Manager(ControlSurface):
     def reload_imports(self):
         try:
             importlib.reload(abletonosc.application)
+            importlib.reload(abletonosc.browser)
+            importlib.reload(abletonosc.midimap)
             importlib.reload(abletonosc.clip)
             importlib.reload(abletonosc.clip_slot)
             importlib.reload(abletonosc.device)
@@ -135,7 +149,10 @@ class Manager(ControlSurface):
             exc = traceback.format_exc()
             logging.warning(exc)
 
-        self.clear_api()
+        try:
+            self.clear_api()
+        except Exception:
+            logger.warning("clear_api failed during reload:\n%s" % traceback.format_exc())
         self.init_api()
         logger.info("Reloaded code")
 

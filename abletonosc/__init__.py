@@ -12,5 +12,6 @@ from .track import TrackHandler
 from .device import DeviceHandler
 from .scene import SceneHandler
 from .view import ViewHandler
+from .browser import BrowserHandler
 from .midimap import MidiMapHandler
 from .constants import OSC_LISTEN_PORT, OSC_RESPONSE_PORT
